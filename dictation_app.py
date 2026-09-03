@@ -11,6 +11,7 @@ import queue
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import asyncio
 import sys
@@ -53,6 +54,12 @@ PREROLL_SECS = 0.5  # pre-press audio spliced into a new session
 # these; every keystroke (incl. a remapped curly quote) still arrived.
 TYPE_DELAY_MS = 1
 TYPE_PIECE = 120  # chars per xdotool process; modifiers re-checked between
+
+# Wayland (Omarchy/Hyprland, Sway, GNOME): no global key grabs and no
+# X11 keymap queries.  Hotkeys come from the compositor via
+# `parakeet-dictation --toggle` over CONTROL_SOCKET; typing goes via wtype.
+_WAYLAND = bool(os.environ.get("WAYLAND_DISPLAY"))
+CONTROL_SOCKET = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "parakeet-dictation.sock"
 BACKSPACE_DELAY_MS = 0
 HISTORY_FILE = DATA_DIR / "history.log"
 SESSIONS_DIR = DATA_DIR / "sessions"
@@ -147,7 +154,7 @@ class AppConfig:
 
     # Typing method: "clipboard" (wl-copy+Ctrl+V, works on all compositors),
     #   "wtype" (needs virtual-keyboard protocol), "ydotool" (needs daemon+uinput)
-    typer: str = "clipboard"
+    typer: str = field(default_factory=lambda: "wtype" if _WAYLAND else "clipboard")
 
     # Hotkey mode: "toggle" (one key) or "start_stop" (separate keys)
     hotkey_mode: str = "toggle"
@@ -356,7 +363,7 @@ class TextTyper:
         self._partial = ""
         self._xdisplay = None
         self._mod_keycodes = ()
-        if method in ("xdotool", "clipboard"):
+        if method in ("xdotool", "clipboard") and not _WAYLAND:
             self._heal_modifiers()
 
     @staticmethod
@@ -381,6 +388,8 @@ class TextTyper:
         user's physical release has already happened.  So: never touch
         modifiers, just wait for the user's hand to lift.
         """
+        if _WAYLAND:
+            return True  # no keymap query; the compositor bind fires on press
         try:
             from Xlib.display import Display
         except ImportError:
@@ -449,8 +458,9 @@ class TextTyper:
                 if not self._modifiers_clear():
                     self._drop(text)
                     return
-                subprocess.run(["xdotool", "key", "ctrl+v"], timeout=5,
-                               start_new_session=True)
+                paste = (["wtype", "-M", "ctrl", "v", "-m", "ctrl"] if _WAYLAND
+                         else ["xdotool", "key", "ctrl+v"])
+                subprocess.run(paste, timeout=5, start_new_session=True)
         except FileNotFoundError:
             print(f"ERROR: {self._method} not found.", file=sys.stderr)
         except subprocess.TimeoutExpired:
@@ -465,9 +475,10 @@ class TextTyper:
                 # ydotool key accepts X11 keycodes; BackSpace = 14
                 for _ in range(count):
                     subprocess.run(["ydotool", "key", "14:1", "14:0"], timeout=5)
-            elif self._method == "wtype":
-                for _ in range(count):
-                    subprocess.run(["wtype", "-k", "BackSpace"], timeout=5)
+            elif self._method == "wtype" or _WAYLAND:
+                # One process for the burst: wtype takes repeated -k args.
+                subprocess.run(["wtype"] + ["-k", "BackSpace"] * count,
+                               timeout=10)
             else:
                 # X11 (xdotool/clipboard): one process for the whole burst.
                 # A held Ctrl would make every one a Ctrl+BackSpace
@@ -1408,6 +1419,56 @@ class DictationController:
 
 
 # ---------------------------------------------------------------------------
+# Control socket (Wayland hotkeys: compositor runs `parakeet-dictation --toggle`)
+# ---------------------------------------------------------------------------
+
+CONTROL_COMMANDS = ("toggle", "start", "stop", "pause")
+
+
+def send_control(cmd: str) -> bool:
+    """Deliver *cmd* to the running instance; False if none is listening."""
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(str(CONTROL_SOCKET))
+            s.sendall(cmd.encode())
+        return True
+    except OSError:
+        return False
+
+
+def serve_control_socket(actions: dict) -> socket.socket:
+    """Run *actions[cmd]* on the GTK thread for each one-word connection."""
+    CONTROL_SOCKET.unlink(missing_ok=True)
+    srv = socket.socket(socket.AF_UNIX)
+    srv.bind(str(CONTROL_SOCKET))
+    srv.listen()
+
+    def on_conn(_fd, _cond):
+        conn, _ = srv.accept()
+        with conn:
+            cmd = conn.recv(32).decode(errors="replace").strip()
+        fn = actions.get(cmd)
+        if fn:
+            fn()
+        return True
+
+    GLib.io_add_watch(srv.fileno(), GLib.IO_IN, on_conn)
+    return srv
+
+
+def hyprland_bindings() -> str:
+    """Lua for ~/.config/hypr/bindings.lua (Omarchy) driving this app."""
+    exe = shutil.which("parakeet-dictation") or f"{sys.executable} {Path(__file__).resolve()}"
+    return (
+        f'o.bind("CTRL + 0", "Toggle dictation", "{exe} --toggle")\n'
+        f'o.bind("CTRL + ALT + 0", "Pause dictation", "{exe} --pause")\n'
+        f'-- or start/stop on separate keys:\n'
+        f'-- o.bind("CTRL + 9", "Start dictation", "{exe} --start")\n'
+        f'-- o.bind("CTRL + 8", "Stop dictation", "{exe} --stop")\n'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Hotkey manager
 # ---------------------------------------------------------------------------
 
@@ -1443,6 +1504,8 @@ class HotkeyManager:
         return wrapper
 
     def start(self):
+        if _WAYLAND:
+            return  # compositor binds call `parakeet-dictation --toggle`
         from pynput import keyboard
         bindings = {}
         if self._config.hotkey_mode == "toggle":
@@ -1972,6 +2035,18 @@ class SettingsDialog(Gtk.Dialog):
         box.set_margin_top(12)
         box.set_margin_bottom(12)
 
+        if _WAYLAND:
+            hint = Gtk.Label(label="Wayland: bind keys in your compositor instead.\n"
+                                   "For Omarchy, add to ~/.config/hypr/bindings.lua:")
+            hint.set_halign(Gtk.Align.START)
+            box.pack_start(hint, False, False, 0)
+            view = Gtk.TextView()
+            view.set_editable(False)
+            view.set_monospace(True)
+            view.get_buffer().set_text(hyprland_bindings())
+            box.pack_start(view, True, True, 0)
+            return box
+
         # Mode
         self._mode_toggle = Gtk.RadioButton.new_with_label(
             None, "Toggle (one key starts and stops)")
@@ -2054,8 +2129,8 @@ class SettingsDialog(Gtk.Dialog):
         hbox_typer.pack_start(Gtk.Label(label="Typing method:"), False, False, 0)
         self._typer_combo = Gtk.ComboBoxText()
         self._typer_combo.append("xdotool", "xdotool type (X11)")
-        self._typer_combo.append("clipboard", "Clipboard paste (recommended)")
-        self._typer_combo.append("wtype", "wtype (GNOME/Sway only)")
+        self._typer_combo.append("clipboard", "Clipboard paste")
+        self._typer_combo.append("wtype", "wtype (Wayland: Hyprland/Sway/GNOME)")
         self._typer_combo.append("ydotool", "ydotool (needs daemon+uinput)")
         self._typer_combo.set_active_id(self._config.typer)
         hbox_typer.pack_start(self._typer_combo, False, False, 0)
@@ -2620,6 +2695,14 @@ class TrayIcon:
 # ---------------------------------------------------------------------------
 
 def main():
+    cmd = sys.argv[1][2:] if len(sys.argv) > 1 else ""
+    if cmd in CONTROL_COMMANDS:
+        if not send_control(cmd):
+            sys.exit(f"{APP_NAME} is not running")
+        return
+    if send_control("ping"):
+        sys.exit(f"{APP_NAME} is already running")
+
     _migrate_legacy_models()
     config = AppConfig.load()
 
@@ -2632,13 +2715,16 @@ def main():
     # tray referenced in hotkey lambdas — assigned after creation
     tray = None
 
-    hotkey_mgr = HotkeyManager(
-        config,
-        on_toggle=lambda: (controller.toggle(), tray and tray.update_ui()),
-        on_start=lambda: (controller.start(), tray and tray.update_ui()),
-        on_stop=lambda: (controller.stop(), tray and tray.update_ui()),
-        on_pause=lambda: controller.toggle_pause(),
-    )
+    actions = {
+        "toggle": lambda: (controller.toggle(), tray and tray.update_ui()),
+        "start": lambda: (controller.start(), tray and tray.update_ui()),
+        "stop": lambda: (controller.stop(), tray and tray.update_ui()),
+        "pause": lambda: controller.toggle_pause(),
+    }
+    hotkey_mgr = HotkeyManager(config, on_toggle=actions["toggle"],
+                               on_start=actions["start"], on_stop=actions["stop"],
+                               on_pause=actions["pause"])
+    control = serve_control_socket(actions)
 
     main_window = MainWindow(controller)
 
@@ -2660,7 +2746,9 @@ def main():
     profile_name = controller.profiles.get(
         config.model_profile, {}
     ).get("name", config.model_profile)
-    if config.hotkey_mode == "toggle":
+    if _WAYLAND:
+        mode_desc = f"Hotkeys via compositor -> {CONTROL_SOCKET}"
+    elif config.hotkey_mode == "toggle":
         mode_desc = f"Toggle: {config.hotkey_toggle}"
     else:
         mode_desc = f"Start: {config.hotkey_start}, Stop: {config.hotkey_stop}"
@@ -2669,6 +2757,8 @@ def main():
 
     Gtk.main()
     hotkey_mgr.stop()
+    control.close()
+    CONTROL_SOCKET.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

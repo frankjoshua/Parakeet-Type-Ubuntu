@@ -86,6 +86,27 @@ sudo apt install wtype gir1.2-ayatanaappindicator3-0.1 libportaudio2 libgireposi
 python dictation_app.py
 ```
 
+### Option C: Omarchy (Arch + Hyprland)
+
+```bash
+git clone https://github.com/danielrosehill/parakeet-dictation.git
+cd parakeet-dictation
+./omarchy/install.sh
+```
+
+The script installs the pacman deps, builds a venv, puts a launcher at
+`~/.local/bin/parakeet-dictation`, and appends to `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("CTRL + 0", "Toggle dictation", "~/.local/bin/parakeet-dictation --toggle")
+o.bind("CTRL + ALT + 0", "Pause dictation", "~/.local/bin/parakeet-dictation --pause")
+```
+
+plus `o.launch_on_start(...)` in `autostart.lua`. On Wayland the app cannot grab
+hotkeys itself, so the compositor drives it through `--toggle/--start/--stop/--pause`,
+which talk to the running instance over `$XDG_RUNTIME_DIR/parakeet-dictation.sock`.
+Typing uses `wtype`; the tray shows in the quickshell bar.
+
 ### Text input method
 
 Text is typed into the focused application via **wtype** (Wayland-native). This is the default and recommended method.
