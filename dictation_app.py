@@ -1456,15 +1456,19 @@ def serve_control_socket(actions: dict) -> socket.socket:
     return srv
 
 
-def hyprland_bindings() -> str:
+def hyprland_bindings(config: AppConfig) -> str:
     """Lua for ~/.config/hypr/bindings.lua (Omarchy) driving this app."""
     exe = shutil.which("parakeet-dictation") or f"{sys.executable} {Path(__file__).resolve()}"
+
+    def key(binding):  # pynput "<ctrl>+<alt>+e" -> Hyprland "CTRL + ALT + E"
+        return " + ".join(p.strip("<>").upper() for p in binding.split("+"))
+
     return (
-        f'o.bind("CTRL + 0", "Toggle dictation", "{exe} --toggle")\n'
-        f'o.bind("CTRL + ALT + 0", "Pause dictation", "{exe} --pause")\n'
+        f'o.bind("{key(config.hotkey_toggle)}", "Toggle dictation", "{exe} --toggle")\n'
+        f'o.bind("{key(config.hotkey_pause)}", "Pause dictation", "{exe} --pause")\n'
         f'-- or start/stop on separate keys:\n'
-        f'-- o.bind("CTRL + 9", "Start dictation", "{exe} --start")\n'
-        f'-- o.bind("CTRL + 8", "Stop dictation", "{exe} --stop")\n'
+        f'-- o.bind("{key(config.hotkey_start)}", "Start dictation", "{exe} --start")\n'
+        f'-- o.bind("{key(config.hotkey_stop)}", "Stop dictation", "{exe} --stop")\n'
     )
 
 
@@ -2043,7 +2047,7 @@ class SettingsDialog(Gtk.Dialog):
             view = Gtk.TextView()
             view.set_editable(False)
             view.set_monospace(True)
-            view.get_buffer().set_text(hyprland_bindings())
+            view.get_buffer().set_text(hyprland_bindings(self._config))
             box.pack_start(view, True, True, 0)
             return box
 
