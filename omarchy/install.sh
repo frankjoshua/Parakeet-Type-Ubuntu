@@ -13,7 +13,7 @@ sudo pacman -S --needed --noconfirm libc++ wtype wl-clipboard \
 "$DIR/.venv/bin/pip" install -q -r "$DIR/requirements.txt" requests tqdm
 
 mkdir -p "$(dirname "$BIN")"
-printf '#!/bin/bash\nexec "%s/.venv/bin/python" "%s/dictation_app.py" "$@"\n' "$DIR" "$DIR" > "$BIN"
+printf '#!/bin/bash\nexec "%s/.venv/bin/python" -u "%s/dictation_app.py" "$@"\n' "$DIR" "$DIR" > "$BIN"
 chmod +x "$BIN"
 
 # Hyprland: hotkeys + autostart (idempotent)
