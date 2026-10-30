@@ -1,0 +1,12 @@
+# GPU inference ("provider": "cuda" in config.json). Install on top of requirements.txt:
+#   .venv/bin/pip install -r requirements-cuda.txt
+# Then put the CUDA libraries on the loader path for the app process, e.g. in the systemd unit:
+#   LD_LIBRARY_PATH=<venv>/lib/python3.12/site-packages/nvidia/{cublas,cuda_nvrtc,cuda_runtime,cudnn,cufft,curand,nvjitlink}/lib
+# The sherpa-onnx version must match a published +cuda build (https://k2-fsa.github.io/sherpa/onnx/cuda.html).
+https://huggingface.co/csukuangfj2/sherpa-onnx-wheels/resolve/main/cuda/1.13.4/sherpa_onnx-1.13.4+cuda12.cudnn9.onnxruntime1.27.1-cp312-cp312-linux_x86_64.whl
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cuda-nvrtc-cu12==12.9.86
+nvidia-cuda-runtime-cu12==12.9.79
+nvidia-cudnn-cu12==9.27.0.42
+nvidia-cufft-cu12==11.4.1.4
+nvidia-curand-cu12==10.3.10.19
