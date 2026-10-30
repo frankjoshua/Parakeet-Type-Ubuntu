@@ -195,6 +195,7 @@ Settings stored in `~/.config/parakeet-dictation/config.json`:
 {
   "model_profile": "desktop",
   "num_threads": 4,
+  "provider": "cpu",
   "vad_threshold": 0.5,
   "beep_volume": 0.5,
   "audio_device": "",
@@ -209,6 +210,10 @@ Settings stored in `~/.config/parakeet-dictation/config.json`:
   "night_end": 9
 }
 ```
+
+### GPU inference (optional, NVIDIA)
+
+Set `"provider": "cuda"` to run the local models through ONNX Runtime's CUDA provider. On a machine whose CPU is busy with other work, this takes `desktop-fp32` from ~0.7 s to ~0.15 s per 10 s of audio (GTX 1660), and the time no longer depends on CPU load. The int8 `desktop` profile gains nothing because its quantized ops run on the CPU. Install the CUDA build and libraries listed in `requirements-cuda.txt`. Then start the app with those libraries on `LD_LIBRARY_PATH`, and with `CUDA_VISIBLE_DEVICES` set to choose the GPU (see the comments in that file). If the CUDA provider can't load, the app uses the CPU and writes the reason to `history.log`.
 
 ## Requirements
 

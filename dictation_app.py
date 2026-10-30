@@ -132,6 +132,11 @@ class AppConfig:
     model_profile: str = "desktop"
     num_threads: int = min(os.cpu_count() or 4, 8)
     vad_threshold: float = 0.5
+    # ONNX Runtime execution provider for the local models: "cpu" or "cuda".
+    # "cuda" needs the CUDA build of sherpa-onnx (requirements-cuda.txt) and its
+    # nvidia/*/lib directories on LD_LIBRARY_PATH; if it can't load, the app
+    # falls back to "cpu" and says so in the history log.
+    provider: str = "cpu"
 
     # Max seconds of continuous speech before a chunk is force-transcribed.
     # 0 = no limit: transcribe only on a pause or when recording stops.
@@ -752,10 +757,19 @@ class ASREngine:
     def _get_recognizer(self):
         with self._recognizer_lock:
             if self._recognizer is None:
-                if self._profile.get("streaming", False):
-                    self._recognizer = self._build_online_recognizer()
-                else:
-                    self._recognizer = self._build_offline_recognizer()
+                build = (self._build_online_recognizer
+                         if self._profile.get("streaming", False)
+                         else self._build_offline_recognizer)
+                provider = self._config.provider
+                try:
+                    self._recognizer = build(provider)
+                except RuntimeError as e:
+                    if provider == "cpu":
+                        raise
+                    msg = f"provider {provider!r} unavailable ({e}); using cpu"
+                    print(f"WARNING: {msg}", file=sys.stderr)
+                    log_history(msg)
+                    self._recognizer = build("cpu")
             return self._recognizer
 
     def _warm(self):
@@ -799,7 +813,7 @@ class ASREngine:
                 f"Run: python download_models.py {self._config.model_profile}"
             )
 
-    def _build_offline_recognizer(self):
+    def _build_offline_recognizer(self, provider: str):
         import sherpa_onnx
         model_dir = self._get_model_dir()
         files = self._profile["files"]
@@ -814,7 +828,7 @@ class ASREngine:
                 num_threads=self._config.num_threads,
                 sample_rate=SAMPLE_RATE,
                 feature_dim=self._profile.get("feature_dim", 128),
-                provider="cpu",
+                provider=provider,
                 model_type=self._profile.get("model_type", "nemo_transducer"),
                 decoding_method="greedy_search",
             )
@@ -828,7 +842,7 @@ class ASREngine:
                 num_threads=self._config.num_threads,
                 sample_rate=SAMPLE_RATE,
                 feature_dim=self._profile.get("feature_dim", 128),
-                provider="cpu",
+                provider=provider,
                 decoding_method="greedy_search",
             )
         else:
@@ -838,11 +852,11 @@ class ASREngine:
                 num_threads=self._config.num_threads,
                 sample_rate=SAMPLE_RATE,
                 feature_dim=self._profile.get("feature_dim", 128),
-                provider="cpu",
+                provider=provider,
                 decoding_method="greedy_search",
             )
 
-    def _build_online_recognizer(self):
+    def _build_online_recognizer(self, provider: str):
         import sherpa_onnx
         model_dir = self._get_model_dir()
         files = self._profile["files"]
@@ -854,7 +868,7 @@ class ASREngine:
             num_threads=self._config.num_threads,
             sample_rate=SAMPLE_RATE,
             feature_dim=self._profile.get("feature_dim", 128),
-            provider="cpu",
+            provider=provider,
             enable_endpoint_detection=True,
             rule1_min_trailing_silence=2.4,
             rule2_min_trailing_silence=1.2,
